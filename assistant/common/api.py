@@ -393,6 +393,34 @@ class API(MixinMeta):
                         break
         return messages
 
+    async def ensure_tool_consitency(self, messages: List[dict]) -> bool:
+        """Modify a message payload in-place to ensure all tool calls have preceeding tool_id call for it"""
+        cleaned = False
+        tool_call_ids = {}
+        # Step 1: Identify assistant messages with 'tool_calls'
+        for idx, msg in enumerate(messages):
+            if msg["role"] == "assistant" and "tool_calls" in msg:
+                # Step 2: Extract 'tool_call_id' values
+                for tool_call in msg["tool_calls"]:
+                    tool_call_id = tool_call["id"]
+                    tool_call_ids[tool_call_id] = {"found": False, "idx": idx}  # Initialize as not found
+
+        # Step 3: Search for tool messages responding to 'tool_call_id'
+        for msg in messages:
+            if msg["role"] == "tool" and "tool_call_id" in msg:
+                tool_call_id = msg["tool_call_id"]
+                if tool_call_id in tool_call_ids:
+                    # Step 4: Mark the tool_call_id as found
+                    tool_call_ids[tool_call_id]["found"] = True
+
+        # Step 5: Check for any 'tool_call_id' without a corresponding tool message
+        for tool_call_id, i in tool_call_ids.items():
+            if not i["found"]:
+                messages.pop(i["idx"])
+                log.debug(f"Popping message with index {i['idx']} since it has no preceeding tool call")
+                cleaned = True
+        return cleaned
+
     @perf()
     async def degrade_conversation(
         self,
@@ -443,7 +471,7 @@ class API(MixinMeta):
                 return messages, function_list, True
 
         # Find the indices of the most recent messages for each role
-        most_recent_user = most_recent_function = most_recent_assistant, most_recent_tool = -1
+        most_recent_user = most_recent_function = most_recent_assistant = most_recent_tool = -1
         for i, msg in enumerate(reversed(messages)):
             if most_recent_user == -1 and msg["role"] == "user":
                 most_recent_user = len(messages) - 1 - i

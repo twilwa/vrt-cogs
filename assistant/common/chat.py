@@ -51,13 +51,13 @@ class ChatHandler(MixinMeta):
         outputfile_pattern = r"--outputfile\s+([^\s]+)"
         extract_pattern = r"--extract"
         get_last_message_pattern = r"--last"
-        image_url_pattern = r"(http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+\.(?:jpg|jpeg|png|gif|bmp|webp))"
+        image_url_pattern = r"(https?:\/\/\S+\.(?:png|gif|webp|jpg|jpeg)\b)"
 
         # Extract the optional arguments and their values
         outputfile_match = re.search(outputfile_pattern, question)
         extract_match = re.search(extract_pattern, question)
         get_last_message_match = re.search(get_last_message_pattern, question)
-        image_url_match = re.search(image_url_pattern, question)
+        image_url_match = re.findall(image_url_pattern, question)
 
         # Remove the optional arguments from the input string to obtain the question variable
         question = re.sub(outputfile_pattern, "", question)
@@ -71,7 +71,7 @@ class ChatHandler(MixinMeta):
         get_last_message = bool(get_last_message_match)
         images = []
         if image_url_match:
-            for url in image_url_match.groups():
+            for url in image_url_match:
                 images.append(url)
 
         question = question.replace(self.bot.user.mention, self.bot.user.display_name)
@@ -164,10 +164,6 @@ class ChatHandler(MixinMeta):
                     reply = _("Uh oh, looks like my API key is invalid!")
             except openai.RateLimitError as e:
                 reply = str(e)
-            except KeyError as e:
-                log.debug("get_chat_response error", exc_info=e)
-                await message.channel.send(_("**KeyError in prompt or system message**\n{}").format(box(str(e), "py")))
-                return
             except Exception as e:
                 prefix = (await self.bot.get_valid_prefixes(message.guild))[0]
                 log.error(f"API Error (From listener: {listener})", exc_info=e)
@@ -176,7 +172,7 @@ class ChatHandler(MixinMeta):
                 reply = _("Uh oh, something went wrong! Bot owner can use `{}` to view the error.").format(
                     f"{prefix}traceback"
                 )
-                reply += "\n" + _("API Status: {}").format(status)
+                reply += "\n\n" + _("API Status: {}").format(status)
 
         if reply is None:
             return
@@ -348,7 +344,9 @@ class ChatHandler(MixinMeta):
                 messages, function_calls, degraded = await self.degrade_conversation(
                     messages, function_calls, conf, author
                 )
-                if degraded:
+
+                cleaned = await self.ensure_tool_consitency(messages)
+                if cleaned or degraded:
                     conversation.overwrite(messages)
 
             if not messages:
