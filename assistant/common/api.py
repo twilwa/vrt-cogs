@@ -391,34 +391,44 @@ class API(MixinMeta):
                             continue
                         messages[idx]["content"] = obj["text"]
                         break
-        return messages
 
-    async def ensure_tool_consitency(self, messages: List[dict]) -> bool:
-        """Modify a message payload in-place to ensure all tool calls have preceeding tool_id call for it"""
+    async def ensure_tool_consistency(self, messages: List[dict]) -> bool:
+        """Modify a message payload in-place to ensure all tool calls have a following tool response,
+        and all tool responses have a preceding tool call."""
         cleaned = False
-        tool_call_ids = {}
-        # Step 1: Identify assistant messages with 'tool_calls'
+        tool_calls_and_responses = {}  # Tracks the pairing of tool calls and responses
+
+        # First pass: Identify tool calls and their expected responses
         for idx, msg in enumerate(messages):
             if msg["role"] == "assistant" and "tool_calls" in msg:
-                # Step 2: Extract 'tool_call_id' values
                 for tool_call in msg["tool_calls"]:
                     tool_call_id = tool_call["id"]
-                    tool_call_ids[tool_call_id] = {"found": False, "idx": idx}  # Initialize as not found
-
-        # Step 3: Search for tool messages responding to 'tool_call_id'
-        for msg in messages:
-            if msg["role"] == "tool" and "tool_call_id" in msg:
+                    tool_calls_and_responses[tool_call_id] = {"call_idx": idx, "response_idx": None}
+            elif msg["role"] == "tool":
                 tool_call_id = msg["tool_call_id"]
-                if tool_call_id in tool_call_ids:
-                    # Step 4: Mark the tool_call_id as found
-                    tool_call_ids[tool_call_id]["found"] = True
+                if tool_call_id in tool_calls_and_responses:
+                    tool_calls_and_responses[tool_call_id]["response_idx"] = idx
 
-        # Step 5: Check for any 'tool_call_id' without a corresponding tool message
-        for tool_call_id, i in tool_call_ids.items():
-            if not i["found"]:
-                messages.pop(i["idx"])
-                log.debug(f"Popping message with index {i['idx']} since it has no preceeding tool call")
+        # Check for any inconsistencies
+        indices_to_remove = []
+        for tool_call_id, data in tool_calls_and_responses.items():
+            call_idx = data["call_idx"]
+            response_idx = data["response_idx"]
+            # Check if there is a response without a preceding call
+            if response_idx is not None and (call_idx is None or call_idx > response_idx):
+                indices_to_remove.append(response_idx)
+                log.debug(f"Popping message with index {response_idx} since it has no preceding tool call")
                 cleaned = True
+            # Check if there is a call without a following response
+            elif call_idx is not None and (response_idx is None or response_idx < call_idx):
+                indices_to_remove.append(call_idx)
+                log.debug(f"Popping message with index {call_idx} since it has no following tool response")
+                cleaned = True
+
+        # Remove the messages with inconsistencies in reverse order to avoid index shifting
+        for idx in sorted(indices_to_remove, reverse=True):
+            messages.pop(idx)
+
         return cleaned
 
     @perf()
@@ -470,6 +480,13 @@ class API(MixinMeta):
             if total_tokens <= max_tokens:
                 return messages, function_list, True
 
+        # Pop one random message from the first quarter of the conversation
+        index = round(len(messages) / 4)
+        popped = messages.pop(index)
+        total_tokens -= await self.count_tokens(json.dumps(popped), conf, model)
+        if total_tokens <= max_tokens:
+            return messages, function_list, True
+
         # Find the indices of the most recent messages for each role
         most_recent_user = most_recent_function = most_recent_assistant = most_recent_tool = -1
         for i, msg in enumerate(reversed(messages)):
@@ -487,7 +504,7 @@ class API(MixinMeta):
         # Clear out function calls (not the result, just the message of it being called)
         i = 0
         while total_tokens > max_tokens and i < len(messages):
-            if messages[i]["content"]:
+            if messages[i]["content"] or messages[i].get("tool_calls"):
                 i += 1
                 continue
             messages.pop(i)

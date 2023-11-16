@@ -77,8 +77,6 @@ class Admin(MixinMeta):
         embed = discord.Embed(title=_("Performance Stats"), description=box(txt), color=ctx.author.color)
         await ctx.send(embed=embed)
 
-
-
     @assistant.command(name="view")
     @commands.bot_has_permissions(embed_links=True)
     async def view_settings(self, ctx: commands.Context, private: bool = True):
@@ -132,6 +130,7 @@ class Admin(MixinMeta):
             + _("`Channel:             `{}\n").format(channel)
             + _("`? Required:          `{}\n").format(conf.endswith_questionmark)
             + _("`Mentions:            `{}\n").format(conf.mention)
+            + _("`Collaborative Mode:  `{}\n").format(conf.collab_convos)
             + _("`Max Retention:       `{}\n").format(conf.max_retention)
             + _("`Retention Expire:    `{}s\n").format(conf.max_retention_time)
             + _("`Max Tokens:          `{}\n").format(conf.max_tokens)
@@ -163,7 +162,7 @@ class Admin(MixinMeta):
         embedding_field = (
             _("`Top N Embeddings:  `{}\n").format(conf.top_n)
             + _("`Min Relatedness:   `{}\n").format(conf.min_relatedness)
-            + _("`Embedding Method:  `{}\n").format(conf.embed_method.value)
+            + _("`Embedding Method:  `{}\n").format(conf.embed_method)
             + _("`Encodings:         `{}").format(encoded_by)
         )
         embed_num = humanize_number(len(conf.embeddings))
@@ -666,6 +665,22 @@ class Admin(MixinMeta):
             await ctx.send(_("Mentions are now **Enabled**"))
         await self.save_conf()
 
+    @assistant.command(name="collab")
+    async def toggle_collab(self, ctx: commands.Context):
+        """
+        Toggle collaborative conversations
+
+        Multiple people speaking in a channel will be treated as a single conversation.
+        """
+        conf = self.db.get_conf(ctx.guild)
+        if conf.collab_convos:
+            conf.collab_convos = False
+            await ctx.send(_("Collaborative conversations are now **Disabled**"))
+        else:
+            conf.collab_convos = True
+            await ctx.send(_("Collaborative conversations are now **Enabled**"))
+        await self.save_conf()
+
     @assistant.command(name="maxretention")
     async def max_retention(self, ctx: commands.Context, max_retention: int):
         """
@@ -899,7 +914,7 @@ class Admin(MixinMeta):
         """
         Set the OpenAI model to use
         """
-        model = model.lower().strip()
+        model = model.lower().strip() if model else None
         conf = self.db.get_conf(ctx.guild)
         if not await self.can_call_llm(conf, ctx):
             return

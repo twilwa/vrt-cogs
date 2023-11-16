@@ -1,16 +1,30 @@
 import logging
+import typing as t
 from typing import List, Optional
 
 import aiohttp
+import httpx
+import openai
 from aiocache import cached
-from openai import AsyncOpenAI
 from perftracker import perf
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_random_exponential,
+)
 
 from .constants import MODELS_1106, SUPPORTS_FUNCTIONS, SUPPORTS_TOOLS
 
 log = logging.getLogger("red.vrt.assistant.calls")
 
 
+@retry(
+    retry=retry_if_exception_type(t.Union[httpx.TimeoutException, openai.BadRequestError]),
+    wait=wait_random_exponential(min=5, max=15),
+    stop=stop_after_attempt(3),
+    reraise=True,
+)
 @perf()
 async def request_chat_completion_raw(
     model: str,
@@ -25,11 +39,11 @@ async def request_chat_completion_raw(
     seed: int = None,
 ):
     log.debug(f"request_chat_completion_raw: {model}")
-    client = AsyncOpenAI(
+    client = openai.AsyncOpenAI(
         api_key=api_key,
         base_url=api_base,
         max_retries=5,
-        timeout=20,
+        timeout=240,
     )
     kwargs = {
         "model": model,
@@ -58,6 +72,12 @@ async def request_chat_completion_raw(
     return response
 
 
+@retry(
+    retry=retry_if_exception_type(t.Union[httpx.TimeoutException, openai.BadRequestError]),
+    wait=wait_random_exponential(min=5, max=15),
+    stop=stop_after_attempt(3),
+    reraise=True,
+)
 @perf()
 async def request_completion_raw(
     model: str,
@@ -66,19 +86,18 @@ async def request_completion_raw(
     api_key: str,
     max_tokens: int,
     api_base: Optional[str] = None,
-    timeout: int = 30,
 ) -> str:
     log.debug(f"request_completion_raw: {model}")
-    client = AsyncOpenAI(
+    client = openai.AsyncOpenAI(
         api_key=api_key,
         base_url=api_base,
         max_retries=5,
+        timeout=240,
     )
     kwargs = {
         "model": model,
         "prompt": prompt,
         "temperature": temperature,
-        "timeout": timeout,
     }
     if max_tokens > 0:
         kwargs["max_tokens"] = max_tokens
@@ -87,6 +106,12 @@ async def request_completion_raw(
     return response
 
 
+@retry(
+    retry=retry_if_exception_type(t.Union[httpx.TimeoutException, openai.BadRequestError]),
+    wait=wait_random_exponential(min=5, max=15),
+    stop=stop_after_attempt(3),
+    reraise=True,
+)
 @perf()
 @cached(ttl=3600)
 async def request_embedding_raw(
@@ -95,15 +120,15 @@ async def request_embedding_raw(
     api_base: Optional[str] = None,
 ) -> List[float]:
     log.debug("request_embedding_raw")
-    client = AsyncOpenAI(
+    client = openai.AsyncOpenAI(
         api_key=api_key,
         base_url=api_base,
         max_retries=5,
+        timeout=15,
     )
     response = await client.embeddings.create(
         input=text,
         model="text-embedding-ada-002",
-        timeout=10,
     )
     log.debug(f"EMBED RESPONSE TYPE: {type(response)}")
     return response

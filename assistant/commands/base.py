@@ -117,7 +117,8 @@ If a file has no extension it will still try to read it only if it can be decode
         if not user:
             user = ctx.author
         conf = self.db.get_conf(ctx.guild)
-        conversation = self.db.get_conversation(user.id, ctx.channel.id, ctx.guild.id)
+        mem_id = ctx.channel.id if conf.collab_convos else user.id
+        conversation = self.db.get_conversation(mem_id, ctx.channel.id, ctx.guild.id)
         messages = len(conversation.messages)
 
         max_tokens = self.get_max_tokens(conf, ctx.author)
@@ -167,13 +168,15 @@ If a file has no extension it will still try to read it only if it can be decode
                 model,
             )
         )
+        if conf.collab_convos:
+            desc += "\n" + _("*Collabroative conversations are enabled*")
         embed = discord.Embed(
             description=desc,
             color=color,
         )
         embed.set_author(
-            name=_("Conversation stats for {}").format(user.display_name),
-            icon_url=user.display_avatar,
+            name=_("Conversation stats for {}").format(ctx.channel.name if conf.collab_convos else user.display_name),
+            icon_url=ctx.guild.icon if conf.collab_convos else user.display_avatar,
         )
         embed.set_footer(text=_("Token limit is a soft cap and excess is trimmed before sending to the api"))
         await ctx.send(embed=embed)
@@ -186,7 +189,17 @@ If a file has no extension it will still try to read it only if it can be decode
 
         This will clear all message history between you and the bot for this channel
         """
-        conversation = self.db.get_conversation(ctx.author.id, ctx.channel.id, ctx.guild.id)
+        conf = self.db.get_conf(ctx.guild)
+        mem_id = ctx.channel.id if conf.collab_convos else ctx.author.id
+        perms = [
+            await self.bot.is_mod(ctx.author),
+            ctx.channel.permissions_for(ctx.author).manage_messages,
+            ctx.author.id in self.bot.owner_ids,
+        ]
+        if conf.collab_convos and not any(perms):
+            txt = _("Only moderators can clear channel conversations when collaborative conversations are enabled!")
+            return await ctx.send(txt)
+        conversation = self.db.get_conversation(mem_id, ctx.channel.id, ctx.guild.id)
         conversation.reset()
         await ctx.send(_("Your conversation in this channel has been reset!"))
 
@@ -237,7 +250,9 @@ If a file has no extension it will still try to read it only if it can be decode
         """
         if not user:
             user = ctx.author
-        conversation = self.db.get_conversation(user.id, ctx.channel.id, ctx.guild.id)
+        conf = self.db.get_conf(ctx.guild)
+        mem_id = ctx.channel.id if conf.collab_convos else user.id
+        conversation = self.db.get_conversation(mem_id, ctx.channel.id, ctx.guild.id)
         if not conversation.messages:
             return await ctx.send(_("You have no conversation in this channel!"))
 

@@ -34,7 +34,7 @@ class Fluent(commands.Cog):
     """
 
     __author__ = "Vertyco"
-    __version__ = "2.1.1"
+    __version__ = "2.1.4"
 
     def format_help_for_context(self, ctx: commands.Context):
         helpcmd = super().format_help_for_context(ctx)
@@ -140,6 +140,12 @@ class Fluent(commands.Cog):
         """
         if not channel:
             channel = ctx.channel
+
+        if language1.lower() == language2.lower():
+            txt = _("You can't use the same language for both parameters. {} to {} is still {}...").format(
+                language1, language1, language1
+            )
+            return await ctx.send(txt)
 
         translator = TranslateManager()
         lang1 = await translator.get_lang(language1)
