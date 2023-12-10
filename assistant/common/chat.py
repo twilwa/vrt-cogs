@@ -26,6 +26,7 @@ from perftracker import perf
 from redbot.core import bank
 from redbot.core.i18n import Translator, cog_i18n
 from redbot.core.utils.chat_formatting import box, humanize_number, pagify
+from sentry_sdk import add_breadcrumb
 
 from ..abc import MixinMeta
 from .constants import READ_EXTENSIONS, SUPPORTS_FUNCTIONS, SUPPORTS_VISION
@@ -124,7 +125,7 @@ class ChatHandler(MixinMeta):
         # If referencing a message that isnt part of the user's conversation, include the context
         if hasattr(message, "reference") and message.reference:
             ref = message.reference.resolved
-            if ref and ref.author.id != message.author.id:
+            if ref and ref.author.id != message.author.id and ref.author.id != self.bot.user.id:
                 # If we're referencing the bot, make sure the bot's message isnt referencing the convo
                 include = True
                 if hasattr(ref, "reference") and ref.reference:
@@ -254,6 +255,9 @@ class ChatHandler(MixinMeta):
         )
         if conf.collab_convos and isinstance(author, discord.Member):
             message = f"{author.display_name}: {message}"
+
+        conversation.cleanup(conf, author)
+        conversation.refresh()
         try:
             return await self._get_chat_response(
                 message,
@@ -291,7 +295,8 @@ class ChatHandler(MixinMeta):
 
         query_embedding = []
         user = author if isinstance(author, discord.Member) else None
-        message_tokens = await self.count_tokens(message, conf, conf.get_user_model(user))
+        model = conf.get_user_model(user)
+        message_tokens = await self.count_tokens(message, conf, model)
         words = message.split(" ")
         if conf.top_n and message_tokens < 8191 and len(words) > 3:
             # Save on tokens by only getting embeddings if theyre enabled
@@ -366,14 +371,21 @@ class ChatHandler(MixinMeta):
                     functions=function_calls,
                     member=author,
                 )
-            except httpx.ReadTimeout as e:
-                log.error("Response timed out", exc_info=e)
-                raise e
+            except httpx.ReadTimeout:
+                reply = _("Request timed out, please try again.")
+                break
             except Exception as e:
-                log.error(
-                    f"Response Exception!\n"
-                    f"MESSAGES: {json.dumps(messages, indent=2)}\n"
-                    f"FUNCTIONS: {json.dumps(function_calls, indent=2) if function_calls else 'None'}",
+                add_breadcrumb(
+                    category="chat",
+                    message=f"Response Exception: {model}",
+                    level="info",
+                    data={
+                        "conversation": json.dumps(messages, indent=2),
+                        "functions": json.dumps(function_calls, indent=2) if function_calls else "None",
+                    },
+                )
+                log.debug(
+                    f"Response Exception!\nConversation: {json.dumps(messages, indent=2)}\n",
                     exc_info=e,
                 )
                 raise e
@@ -433,31 +445,36 @@ class ChatHandler(MixinMeta):
 
                 try:
                     args = json.loads(arguments)
+                    parse_success = True
                 except json.JSONDecodeError:
+                    parse_success = False
                     args = {}
-                    log.error(f"Failed to parse parameters for custom function {function_name}\nArguments: {arguments}")
 
-                extras = {
-                    "user": guild.get_member(author) if isinstance(author, int) else author,
-                    "channel": guild.get_channel_or_thread(channel) if isinstance(channel, int) else channel,
-                    "guild": guild,
-                    "bot": self.bot,
-                    "conf": conf,
-                }
-                kwargs = {**args, **extras}
-                func = function_map[function_name]
-                try:
-                    if iscoroutinefunction(func):
-                        func_result = await func(**kwargs)
-                    else:
-                        func_result = await asyncio.to_thread(func, **kwargs)
-                except Exception as e:
-                    log.error(
-                        f"Custom function {function_name} failed to execute!\nArgs: {arguments}",
-                        exc_info=e,
-                    )
-                    function_calls = [i for i in function_calls if i["name"] != function_name]
-                    continue
+                if parse_success:
+                    extras = {
+                        "user": guild.get_member(author) if isinstance(author, int) else author,
+                        "channel": guild.get_channel_or_thread(channel) if isinstance(channel, int) else channel,
+                        "guild": guild,
+                        "bot": self.bot,
+                        "conf": conf,
+                    }
+                    kwargs = {**args, **extras}
+                    func = function_map[function_name]
+                    try:
+                        if iscoroutinefunction(func):
+                            func_result = await func(**kwargs)
+                        else:
+                            func_result = await asyncio.to_thread(func, **kwargs)
+                    except Exception as e:
+                        log.error(
+                            f"Custom function {function_name} failed to execute!\nArgs: {arguments}",
+                            exc_info=e,
+                        )
+                        func_result = traceback.format_exc()
+                        function_calls = [i for i in function_calls if i["name"] != function_name]
+                else:
+                    # Help the model self-correct
+                    func_result = f"JSONDecodeError: Failed to parse arguments for function {function_name}"
 
                 # Prep framework for alternative response types!
                 if isinstance(func_result, dict):
@@ -571,7 +588,7 @@ class ChatHandler(MixinMeta):
                 text = text.replace(key, str(v))
             return text
 
-        system_prompt = format_string(conf.system_prompt)
+        system_prompt = format_string(conversation.system_prompt_override or conf.system_prompt)
         initial_prompt = format_string(conf.prompt)
         model = conf.get_user_model(author)
         current_tokens = await self.count_tokens(message + system_prompt + initial_prompt, conf, model)

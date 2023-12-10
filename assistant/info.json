@@ -31,7 +31,9 @@
     "pandas",
     "numpy",
     "perftracker",
-    "tenacity"
+    "pytz",
+    "tenacity",
+    "sentry_sdk"
   ],
   "short": "Another Chat GPT Cog",
   "tags": [

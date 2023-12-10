@@ -167,9 +167,12 @@ uncomp/
 compress.py
 
 
-# Temporary
+# WIP/Temp
 backups/
 orchestrator/
 welcomer/
 cookiecutter/
 fishing/
+osmosis/
+botarena/
+function_wizard.py

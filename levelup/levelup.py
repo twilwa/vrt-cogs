@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import random
+import re
 import sys
 from datetime import datetime
 from io import BytesIO
@@ -81,7 +82,7 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
     """
 
     __author__ = "Vertyco#0117"
-    __version__ = "3.10.1"
+    __version__ = "3.11.7"
 
     def format_help_for_context(self, ctx):
         helpcmd = super().format_help_for_context(ctx)
@@ -659,14 +660,14 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
         leveltime = monotonic()
         if roles_to_add:
             try:
-                await member.add_roles(*roles_to_add)
+                await member.add_roles(*roles_to_add, reason=_("Leveled Up!"))
             except discord.Forbidden:
-                pass
+                log.warning(f"Lacking permissions to add roles to {member.name} in {member.guild.name}")
         if roles_to_remove:
             try:
-                await member.add_roles(*roles_to_remove)
+                await member.add_roles(*roles_to_remove, reason=_("Auto-remove previous level roles"))
             except discord.Forbidden:
-                pass
+                log.warning(f"Lacking permissions to remove roles from {member.name} in {member.guild.name}")
 
         t = int((monotonic() - leveltime) * 1000)
         get_stats().add("levelup.level_assignment", t)
@@ -721,7 +722,9 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
             addxp = False
 
         if conf["length"]:  # Make sure message meets minimum length requirements
-            if len(message.content) < conf["length"]:
+            regex = r"<(@!|#)[0-9]{18}>|<a{0,1}:[a-zA-Z0-9_.]{2,32}:[0-9]{18,19}>"
+            cleaned = re.sub(regex, "", message.content)
+            if len(cleaned) < conf["length"]:
                 addxp = False
 
         if addxp:  # Give XP
@@ -733,7 +736,10 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
                 bxp = random.choice(range(bmin, bmax))
                 xp_to_give += bxp
             cid = str(message.channel.id)
-            cat_cid = str(message.channel.category.id) if message.channel.category else "0"
+            try:
+                cat_cid = str(message.channel.category.id) if message.channel.category else "0"
+            except discord.ClientException:
+                cat_cid = "0"
             if cid in channel_bonuses or cat_cid in channel_bonuses:
                 bonus_id = cid if cid in channel_bonuses else cat_cid
                 bonuschannelrange = channel_bonuses[bonus_id]
@@ -801,10 +807,11 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
                 addxp = False
             # Ignore if user is only one in channel
             in_voice = 0
-            for mem in voice_state.channel.members:
-                if mem.bot:
-                    continue
-                in_voice += 1
+            if voice_state.channel:
+                for mem in voice_state.channel.members:
+                    if mem.bot:
+                        continue
+                    in_voice += 1
             if conf["solo"] and in_voice <= 1:
                 addxp = False
             # Check ignored roles
@@ -1012,7 +1019,7 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
         await self.save_cache(guild)
 
     @commands.group(name="lvlset", aliases=["lset", "levelup"])
-    @commands.has_permissions(manage_messages=True)
+    @commands.mod_or_permissions(manage_messages=True)
     @commands.guild_only()
     async def lvl_group(self, ctx: commands.Context):
         """Access LevelUp setting commands"""
@@ -1173,6 +1180,46 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
 
         await ctx.send(embed=embed)
 
+    @lvl_group.command(name="embedemojis")
+    @commands.bot_has_permissions(embed_links=True)
+    async def set_emojis(
+        self,
+        ctx: commands.Context,
+        level: discord.Emoji | discord.PartialEmoji | str,
+        prestige: discord.Emoji | discord.PartialEmoji | str,
+        star: discord.Emoji | discord.PartialEmoji | str,
+        chat: discord.Emoji | discord.PartialEmoji | str,
+        voicetime: discord.Emoji | discord.PartialEmoji | str,
+        experience: discord.Emoji | discord.PartialEmoji | str,
+        balance: discord.Emoji | discord.PartialEmoji | str,
+    ):
+        """Set the emojis for embed profiles"""
+
+        async def test_reactions(
+            ctx: commands.Context,
+            emojis: list[discord.Emoji | discord.PartialEmoji | str],
+        ) -> bool:
+            try:
+                [await ctx.message.add_reaction(e) for e in emojis]
+                return True
+            except Exception as e:
+                await ctx.send(f"Cannot add reactions: {e}")
+                return False
+
+        reactions = [level, prestige, star, chat, voicetime, experience, balance]
+        if not await test_reactions(ctx, reactions):
+            return
+        conf = self.data[ctx.guild.id]
+        conf["emojis"]["level"] = level if isinstance(level, str) else level.id
+        conf["emojis"]["trophy"] = prestige if isinstance(prestige, str) else prestige.id
+        conf["emojis"]["star"] = star if isinstance(star, str) else star.id
+        conf["emojis"]["chat"] = chat if isinstance(chat, str) else chat.id
+        conf["emojis"]["mic"] = voicetime if isinstance(voicetime, str) else voicetime.id
+        conf["emojis"]["bulb"] = experience if isinstance(experience, str) else experience.id
+        conf["emojis"]["money"] = balance if isinstance(balance, str) else balance.id
+        await ctx.tick()
+        await self.save_cache()
+
     @lvl_group.group(name="admin")
     @commands.guildowner()
     @commands.bot_has_permissions(embed_links=True)
@@ -1223,7 +1270,7 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
             text = _("Not resetting all guilds")
             return await msg.edit(content=text)
         for gid in self.data.copy():
-            self.data[gid] = self.config.defaults["GUILD"]
+            self.data[gid] = constants.default_guild
         await msg.edit(content=_("Settings and stats for all guilds have been reset"))
         await ctx.tick()
         await self.save_cache()
@@ -1237,7 +1284,7 @@ class LevelUp(UserCommands, Generator, commands.Cog, metaclass=CompositeMetaClas
         if not yes:
             text = _("Not resetting config")
             return await msg.edit(content=text)
-        self.data[ctx.guild.id] = self.config.defaults["GUILD"]
+        self.data[ctx.guild.id] = constants.default_guild
         await msg.edit(content=_("All settings and stats reset"))
         await ctx.tick()
         await self.save_cache(ctx.guild)

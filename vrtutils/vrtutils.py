@@ -83,7 +83,7 @@ class VrtUtils(commands.Cog):
     """
 
     __author__ = "Vertyco"
-    __version__ = "1.12.1"
+    __version__ = "1.13.2"
 
     def format_help_for_context(self, ctx: commands.Context):
         helpcmd = super().format_help_for_context(ctx)
@@ -275,11 +275,10 @@ class VrtUtils(commands.Cog):
             command = f"pip {command}"
             res = await self.do_shell_command(command)
             embeds = []
-            page = 1
-            for p in pagify(res):
+            pages = [p for p in pagify(res)]
+            for idx, p in enumerate(pages):
                 embed = discord.Embed(title="Pip Command Results", description=box(p))
-                embed.set_footer(text=f"Page {page}")
-                page += 1
+                embed.set_footer(text=f"Page {idx + 1}/{len(pages)}")
                 embeds.append(embed)
             if len(embeds) > 1:
                 await menu(ctx, embeds, DEFAULT_CONTROLS)
@@ -361,7 +360,7 @@ class VrtUtils(commands.Cog):
             field = embed.fields[-1]
             latency_txt += f"\nMessage:   {humanize_number(round((end - start) * 1000, 2))} ms"
             embed.set_field_at(
-                index=5,
+                index=embed.fields.index(field),
                 name=field.name,
                 value=box(latency_txt, lang="python"),
                 inline=False,
@@ -581,8 +580,8 @@ class VrtUtils(commands.Cog):
     @commands.is_owner()
     @commands.bot_has_permissions(attach_files=True)
     async def usersjson(self, ctx: commands.Context):
-        """Get a json file containing all usernames/ID's in this guild"""
-        members = {str(member.id): member.name for member in ctx.guild.members}
+        """Get a json file containing all non-bot usernames/ID's in this guild"""
+        members = {str(member.id): member.name for member in ctx.guild.members if not member.bot}
         file = text_to_file(json.dumps(members))
         await ctx.send("Here are all usernames and their ID's for this guild", file=file)
 
@@ -819,9 +818,12 @@ class VrtUtils(commands.Cog):
                     for i, m in enumerate(m_sort[:amount])
                 ]
             )
-            for p in pagify(txt, page_length=4000):
-                em = discord.Embed(description=p, color=ctx.author.color)
-                await ctx.send(embed=em)
+
+        embeds = [discord.Embed(description=p, color=ctx.author.color) for p in pagify(txt, page_length=2000)]
+        pages = len(embeds)
+        for idx, i in enumerate(embeds):
+            i.set_footer(text=f"Page {idx + 1}/{pages}")
+        await menu(ctx, embeds, DEFAULT_CONTROLS)
 
     @commands.command()
     @commands.guild_only()
@@ -851,9 +853,12 @@ class VrtUtils(commands.Cog):
                     for i, m in enumerate(m_sort[:amount])
                 ]
             )
-            for p in pagify(txt, page_length=4000):
-                em = discord.Embed(description=p, color=ctx.author.color)
-                await ctx.send(embed=em)
+
+        embeds = [discord.Embed(description=p, color=ctx.author.color) for p in pagify(txt, page_length=2000)]
+        pages = len(embeds)
+        for idx, i in enumerate(embeds):
+            i.set_footer(text=f"Page {idx + 1}/{pages}")
+        await menu(ctx, embeds, DEFAULT_CONTROLS)
 
     @commands.command()
     @commands.guild_only()
@@ -1172,3 +1177,26 @@ class VrtUtils(commands.Cog):
             embeds.append(embed)
 
         await menu(ctx, embeds, DEFAULT_CONTROLS)
+
+    @commands.command(name="react")
+    @commands.mod_or_permissions(add_reactions=True)
+    @commands.bot_has_guild_permissions(add_reactions=True)
+    async def add_a_reaction(
+        self,
+        ctx: commands.Context,
+        emoji: t.Union[discord.Emoji, discord.PartialEmoji, str],
+        message: discord.Message = None,
+    ):
+        """
+        Add a reaction to a message
+        """
+        if not message and hasattr(ctx.message, "reference") and hasattr(ctx.message.reference, "resolved"):
+            message = ctx.message.reference.resolved
+        if not message or not isinstance(message, discord.Message):
+            message = ctx.message
+
+        if not message.channel.permissions_for(ctx.me).add_reactions:
+            return await ctx.send("I don't have permissions to react in that channel!")
+        if not message.channel.permissions_for(ctx.author).add_reactions:
+            return await ctx.send("You don't have permissions to react in that channel!")
+        await message.add_reaction(emoji)

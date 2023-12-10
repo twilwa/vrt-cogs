@@ -393,43 +393,63 @@ class API(MixinMeta):
                         break
 
     async def ensure_tool_consistency(self, messages: List[dict]) -> bool:
-        """Modify a message payload in-place to ensure all tool calls have a following tool response,
-        and all tool responses have a preceding tool call."""
-        cleaned = False
-        tool_calls_and_responses = {}  # Tracks the pairing of tool calls and responses
+        """
+        Ensure all tool calls satisfy schema requirements, modifying the message payload in-place.
 
-        # First pass: Identify tool calls and their expected responses
+        All tool calls must have a following tool response.
+        All tool call responses must have a preceeding tool call.
+        """
+        cleaned = False
+
+        # Map of tool call IDs and their position
+        tool_calls = {}
+        # Map of tool responses and their position
+        tool_responses = {}
+
+        # Map out all existing tool calls and responses
         for idx, msg in enumerate(messages):
-            if msg["role"] == "assistant" and "tool_calls" in msg:
-                for tool_call in msg["tool_calls"]:
+            if msg_tool_calls := msg.get("tool_calls"):
+                for tool_call in msg_tool_calls:
                     tool_call_id = tool_call["id"]
-                    tool_calls_and_responses[tool_call_id] = {"call_idx": idx, "response_idx": None}
+                    tool_calls[tool_call_id] = idx
             elif msg["role"] == "tool":
                 tool_call_id = msg["tool_call_id"]
-                if tool_call_id in tool_calls_and_responses:
-                    tool_calls_and_responses[tool_call_id]["response_idx"] = idx
+                tool_responses[tool_call_id] = idx
 
-        # Check for any inconsistencies
-        indices_to_remove = []
-        for tool_call_id, data in tool_calls_and_responses.items():
-            call_idx = data["call_idx"]
-            response_idx = data["response_idx"]
-            # Check if there is a response without a preceding call
-            if response_idx is not None and (call_idx is None or call_idx > response_idx):
-                indices_to_remove.append(response_idx)
-                log.debug(f"Popping message with index {response_idx} since it has no preceding tool call")
+        indexes_to_purge = set()
+
+        # Find tool calls with no responses
+        for tool_call_id, idx in tool_calls.items():
+            if tool_call_id not in tool_responses:
+                # Tool call has no response
+                indexes_to_purge.add(idx)
                 cleaned = True
-            # Check if there is a call without a following response
-            elif call_idx is not None and (response_idx is None or response_idx < call_idx):
-                indices_to_remove.append(call_idx)
-                log.debug(f"Popping message with index {call_idx} since it has no following tool response")
+            elif tool_call_id in tool_responses and idx > tool_responses[tool_call_id]:
+                # This shouldnt happen, but just in case...
+                log.error(f"Tool call came after tool response!\n{json.dumps(messages, indent=2)}")
+                indexes_to_purge.add(idx)
                 cleaned = True
 
-        # Remove the messages with inconsistencies in reverse order to avoid index shifting
-        for idx in sorted(indices_to_remove, reverse=True):
+        # Find orphaned tool responses
+        for tool_call_id, idx in tool_responses.items():
+            if tool_call_id not in tool_calls:
+                # Tool response has no tool call
+                indexes_to_purge.add(idx)
+                cleaned = True
+            elif tool_call_id in tool_calls and idx < tool_calls[tool_call_id]:
+                # This shouldnt happen, but just in case...
+                log.error(f"Tool response came before tool call!\n{json.dumps(messages, indent=2)}")
+                indexes_to_purge.add(idx)
+                cleaned = True
+
+        if not cleaned:
+            return False
+
+        # Sort reverse order to pop last indexes first
+        to_purge = sorted(indexes_to_purge, reverse=True)
+        for idx in to_purge:
             messages.pop(idx)
-
-        return cleaned
+        log.info(f"Purged {len(to_purge)} tool call items from message payload!")
 
     @perf()
     async def degrade_conversation(
@@ -471,14 +491,6 @@ class API(MixinMeta):
 
         if total_tokens <= max_tokens:
             return messages, function_list, False
-
-        log.debug(f"Removing functions (total: {total_tokens}/max: {max_tokens})")
-        # Degrade function_list first
-        while total_tokens > max_tokens and len(function_list) > 0:
-            popped = function_list.pop(0)
-            total_tokens -= await self.count_tokens(json.dumps(popped), conf, model)
-            if total_tokens <= max_tokens:
-                return messages, function_list, True
 
         # Pop one random message from the first quarter of the conversation
         index = round(len(messages) / 4)
@@ -538,15 +550,16 @@ class API(MixinMeta):
             if total_tokens <= max_tokens:
                 return messages, function_list, True
 
+            # Content is either a list or a string
             if isinstance(messages[i]["content"], list):
                 for idx, msg in enumerate(messages[i]["content"]):
-                    if msg["type"] == "image_url":
+                    if msg["type"] != "text":
                         continue
-                    degraded_content = _degrade_message(msg)
-                    pre = await self.count_tokens(msg, conf, model)
+                    degraded_content = _degrade_message(msg["text"])
+                    pre = await self.count_tokens(msg["text"], conf, model)
                     post = await self.count_tokens(degraded_content, conf, model)
                     diff = pre - post
-                    messages[i]["content"][idx] = degraded_content
+                    messages[i]["content"][idx]["text"] = degraded_content
                     total_tokens -= diff
             else:
                 degraded_content = _degrade_message(messages[i]["content"])
@@ -572,6 +585,14 @@ class API(MixinMeta):
                 continue
             messages.pop(i)
 
+        log.debug(f"Removing functions (total: {total_tokens}/max: {max_tokens})")
+        # Degrade function_list before last resort
+        while total_tokens > max_tokens and len(function_list) > 0:
+            popped = function_list.pop(0)
+            total_tokens -= await self.count_tokens(json.dumps(popped), conf, model)
+            if total_tokens <= max_tokens:
+                return messages, function_list, True
+
         # Degrade the most recent user and function messages as the last resort
         log.debug(f"Degrading user/function messages (total: {total_tokens}/max: {max_tokens})")
         for i in [most_recent_function, most_recent_user, most_recent_tool]:
@@ -580,13 +601,13 @@ class API(MixinMeta):
             while total_tokens > max_tokens:
                 if isinstance(messages[i]["content"], list):
                     for idx, msg in enumerate(messages[i]["content"]):
-                        if msg["type"] == "image_url":
+                        if msg["type"] != "text":
                             continue
-                        degraded_content = _degrade_message(msg)
-                        pre = await self.count_tokens(msg, conf, model)
+                        degraded_content = _degrade_message(msg["text"])
+                        pre = await self.count_tokens(msg["text"], conf, model)
                         post = await self.count_tokens(degraded_content, conf, model)
                         diff = pre - post
-                        messages[i]["content"][idx] = degraded_content
+                        messages[i]["content"][idx]["text"] = degraded_content
                         total_tokens -= diff
                 else:
                     degraded_content = _degrade_message(messages[i]["content"])
@@ -682,13 +703,13 @@ class API(MixinMeta):
                 schema_text = _("This function consumes `{}` input tokens each call\n").format(humanize_number(tokens))
 
                 if user.id in self.bot.owner_ids:
-                    if len(schema) > 1000:
-                        schema_text += box(schema[:1000] + "...", "py")
+                    if len(schema) > 900:
+                        schema_text += box(schema[:900] + "...", "py")
                     else:
                         schema_text += box(schema, "py")
 
-                    if len(func["code"]) > 1000:
-                        code_text = box(func["code"][:1000] + "...", "py")
+                    if len(func["code"]) > 900:
+                        code_text = box(func["code"][:900] + "...", "py")
                     else:
                         code_text = box(func["code"], "py")
 

@@ -7,6 +7,7 @@ import httpx
 import openai
 from aiocache import cached
 from perftracker import perf
+from sentry_sdk import add_breadcrumb
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -20,7 +21,13 @@ log = logging.getLogger("red.vrt.assistant.calls")
 
 
 @retry(
-    retry=retry_if_exception_type(t.Union[httpx.TimeoutException, openai.BadRequestError]),
+    retry=retry_if_exception_type(
+        t.Union[
+            httpx.TimeoutException,
+            openai.BadRequestError,
+            httpx.ReadTimeout,
+        ]
+    ),
     wait=wait_random_exponential(min=5, max=15),
     stop=stop_after_attempt(3),
     reraise=True,
@@ -57,7 +64,6 @@ async def request_chat_completion_raw(
     if seed and model in MODELS_1106:
         kwargs["seed"] = seed
     if functions and model in SUPPORTS_FUNCTIONS:
-        log.debug(f"Calling model with {len(functions)} functions")
         if model in SUPPORTS_TOOLS:
             tools = []
             for func in functions:
@@ -67,13 +73,26 @@ async def request_chat_completion_raw(
                 kwargs["tools"] = tools
         else:
             kwargs["functions"] = functions
+
+    add_breadcrumb(
+        category="api",
+        message=f"Calling request_chat_completion_raw: {model}",
+        level="info",
+        data=kwargs,
+    )
     response = await client.chat.completions.create(**kwargs)
-    log.debug(f"CHAT RESPONSE TYPE: {type(response)}")
+    # log.debug(f"CHAT RESPONSE TYPE: {type(response)}")
     return response
 
 
 @retry(
-    retry=retry_if_exception_type(t.Union[httpx.TimeoutException, openai.BadRequestError]),
+    retry=retry_if_exception_type(
+        t.Union[
+            httpx.TimeoutException,
+            openai.BadRequestError,
+            httpx.ReadTimeout,
+        ]
+    ),
     wait=wait_random_exponential(min=5, max=15),
     stop=stop_after_attempt(3),
     reraise=True,
@@ -101,13 +120,25 @@ async def request_completion_raw(
     }
     if max_tokens > 0:
         kwargs["max_tokens"] = max_tokens
+    add_breadcrumb(
+        category="api",
+        message=f"Calling request_completion_raw: {model}",
+        level="info",
+        data=kwargs,
+    )
     response = await client.completions.create(**kwargs)
-    log.debug(f"COMPLETION RESPONSE TYPE: {type(response)}")
+    # log.debug(f"COMPLETION RESPONSE TYPE: {type(response)}")
     return response
 
 
 @retry(
-    retry=retry_if_exception_type(t.Union[httpx.TimeoutException, openai.BadRequestError]),
+    retry=retry_if_exception_type(
+        t.Union[
+            httpx.TimeoutException,
+            openai.BadRequestError,
+            httpx.ReadTimeout,
+        ]
+    ),
     wait=wait_random_exponential(min=5, max=15),
     stop=stop_after_attempt(3),
     reraise=True,
@@ -126,11 +157,17 @@ async def request_embedding_raw(
         max_retries=5,
         timeout=15,
     )
+    add_breadcrumb(
+        category="api",
+        message="Calling request_embedding_raw",
+        level="info",
+        data={"text": text},
+    )
     response = await client.embeddings.create(
         input=text,
         model="text-embedding-ada-002",
     )
-    log.debug(f"EMBED RESPONSE TYPE: {type(response)}")
+    # log.debug(f"EMBED RESPONSE TYPE: {type(response)}")
     return response
 
 

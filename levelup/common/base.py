@@ -32,6 +32,7 @@ from levelup.utils.formatter import (
 )
 
 from ..abc import MixinMeta
+from .constants import default_guild
 
 if version_info >= VersionInfo.from_str("3.5.0"):
     from .dpymenu import DEFAULT_CONTROLS, menu
@@ -794,6 +795,7 @@ class UserCommands(MixinMeta, ABC):
 
         # Main config stuff
         conf = self.data[gid]
+        buttons = conf["emojis"]
         usepics = conf["usepics"]
         users = conf["users"]
         mention = conf["mention"]
@@ -847,17 +849,40 @@ class UserCommands(MixinMeta, ABC):
         next_xp_diff = xp_needed - xp_prev
         lvlbar = get_bar(user_xp_progress, next_xp_diff, width=barlength)
 
+        def get_emoji(name: str):
+            raw = buttons[name]
+            if isinstance(raw, str) and raw.isdigit():
+                emoji = self.bot.get_emoji(int(raw))
+            elif isinstance(raw, int):
+                emoji = self.bot.get_emoji(raw)
+            else:
+                emoji = raw
+
+            if not emoji:
+                # Get default
+                emoji = get_emoji(default_guild["buttons"][name])
+
+            return emoji
+
+        level_emoji = get_emoji("level")
+        trophy_emoji = get_emoji("trophy")
+        star_emoji = get_emoji("star")
+        chat_emoji = get_emoji("chat")
+        mic_emoji = get_emoji("mic")
+        bulb_emoji = get_emoji("bulb")
+        money_emoji = get_emoji("money")
+
         async with ctx.typing():
             if not usepics:
-                msg = "🎖｜" + _("Level ") + humanize_number(level) + "\n"
+                msg = f"{level_emoji}｜" + _("Level ") + humanize_number(level) + "\n"
                 if prestige:
-                    msg += "🏆｜" + _("Prestige ") + humanize_number(prestige) + f" {emoji['str']}\n"
-                msg += f"⭐｜{humanize_number(stars)}" + _(" stars\n")
-                msg += f"💬｜{humanize_number(messages)}" + _(" messages sent\n")
-                msg += f"🎙｜{time_formatter(voice)}" + _(" in voice\n")
-                msg += f"💡｜{humanize_number(user_xp_progress)}/{humanize_number(next_xp_diff)} Exp ({humanize_number(xp)} total)\n"
+                    msg += f"{trophy_emoji}｜" + _("Prestige ") + humanize_number(prestige) + f" {emoji['str']}\n"
+                msg += f"{star_emoji}｜{humanize_number(stars)}" + _(" stars\n")
+                msg += f"{chat_emoji}｜{humanize_number(messages)}" + _(" messages sent\n")
+                msg += f"{mic_emoji}｜{time_formatter(voice)}" + _(" in voice\n")
+                msg += f"{bulb_emoji}｜{humanize_number(user_xp_progress)}/{humanize_number(next_xp_diff)} Exp ({humanize_number(xp)} total)\n"
                 if showbal:
-                    msg += f"💰｜{humanize_number(bal)} {currency_name}"
+                    msg += f"{money_emoji}｜{humanize_number(bal)} {currency_name}"
                 em = discord.Embed(description=msg, color=user.color)
                 footer = _("Rank ") + position + _(", with ") + str(percentage) + _("% of global server Exp")
                 author_name = _("{}'s Profile").format(user.display_name)
