@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 
 import discord
@@ -12,6 +13,8 @@ from .api import API
 
 DPY2 = True if version_info >= VersionInfo.from_str("3.5.0") else False
 
+log = logging.getLogger("red.vrt.upgradechat")
+
 
 class UpgradeChat(commands.Cog):
     """
@@ -21,7 +24,7 @@ class UpgradeChat(commands.Cog):
     """
 
     __author__ = "Vertyco"
-    __version__ = "0.1.16"
+    __version__ = "0.2.0"
 
     def format_help_for_context(self, ctx):
         helpcmd = super().format_help_for_context(ctx)
@@ -330,13 +333,20 @@ class UpgradeChat(commands.Cog):
             if not logchan:
                 return
 
-            # If bot has ArkShop installed, get the user's registered cluster
-            arkshop = self.bot.get_cog("ArkShop")
             cluster = ""
-            if arkshop:
-                ashopusers = await arkshop.config.guild(ctx.guild).users()
-                if uid in ashopusers:
-                    cluster = ashopusers[uid]["cluster"]
+            # If bot has ArkShop installed, get the user's registered cluster
+            try:
+                if arkshop := self.bot.get_cog("ArkShop"):
+                    # For old versions
+                    ashopusers = await arkshop.config.guild(ctx.guild).users()
+                    if uid in ashopusers:
+                        cluster = ashopusers[uid]["cluster"]
+                elif arktools := self.bot.get_cog("ArkTools"):
+                    # For arktools rewrite, which include shop
+                    if pref_cluster := await arktools.db_utils.get_preferred_cluster_from_discord_id(ctx.author):
+                        cluster = pref_cluster
+            except Exception as e:
+                log.error("Failed to fetch cluster from Arktools", exc_info=e)
 
             desc = f"`Spent:   `${amount_spent}\n" f"`Awarded: `{'{:,}'.format(amount_to_give)} {currency_name}"
 
